@@ -41,19 +41,28 @@ Mata pelajaran: ${String(subject).slice(0, 60)}. ${chapter ? 'Bab/topik: ' + Str
 ${String(hint).slice(0, 300)}
 Aturan format isi catatan: gunakan judul bagian dengan tanda #, poin dengan tanda -, dan tulis istilah penting sebagai baris "Istilah: penjelasan" agar bisa dijadikan flashcard. Jangan mengarang isi yang tidak ada di foto. Jika foto tidak terbaca, balas title "Foto tidak terbaca" dan jelaskan singkat di content.`;
     const model = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
-    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': GEMINI_API_KEY },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }, { inline_data: { mime_type: m[1], data: m[2] } }] }],
-        generationConfig: {
-          responseMimeType: 'application/json',
-          responseSchema: { type: 'OBJECT', properties: { title: { type: 'STRING' }, content: { type: 'STRING' } }, required: ['title', 'content'] }
-        }
-      })
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+    const body = JSON.stringify({
+      contents: [{ parts: [{ text: prompt }, { inline_data: { mime_type: m[1], data: m[2] } }] }],
+      generationConfig: {
+        responseMimeType: 'application/json',
+        responseSchema: { type: 'OBJECT', properties: { title: { type: 'STRING' }, content: { type: 'STRING' } }, required: ['title', 'content'] }
+      }
     });
+    const call = (u, h) => fetch(u, { method: 'POST', headers: { 'Content-Type': 'application/json', ...h }, body });
+    let r = await call(url, { 'x-goog-api-key': GEMINI_API_KEY });
+    if ([400, 401, 403].includes(r.status)) {
+      // cadangan: beberapa format kunci lebih cocok dikirim lewat parameter ?key=
+      const r2 = await call(url + '?key=' + encodeURIComponent(GEMINI_API_KEY), {});
+      if (r2.ok) r = r2; else r = r2.status < r.status || r2.status === 429 ? r2 : r;
+    }
     if (r.status === 429) return res.status(429).json({ error: 'Kuota AI gratis hari ini sedang penuh. Coba lagi nanti.' });
-    if (!r.ok) { console.error('Gemini', r.status, (await r.text()).slice(0, 300)); return res.status(502).json({ error: 'AI sedang bermasalah. Coba lagi.' }); }
+    if (!r.ok) {
+      const raw = (await r.text()).slice(0, 400);
+      let msg = raw; try { msg = JSON.parse(raw).error.message || raw; } catch {}
+      console.error('Gemini', r.status, raw);
+      return res.status(502).json({ error: `AI sedang bermasalah (Gemini ${r.status}): ${String(msg).slice(0, 160)}` });
+    }
     const data = await r.json();
     const text = data?.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '';
     let note; try { note = JSON.parse(text); } catch { note = null; }
@@ -64,4 +73,3 @@ Aturan format isi catatan: gunakan judul bagian dengan tanda #, poin dengan tand
     return res.status(500).json({ error: 'Terjadi kesalahan server.' });
   }
 };
-                                                            
